@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 云端雷达实时波形</title>
+  <!-- 引入公共 MQTT WebSocket 库 -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    body { background-color: #1e272e; color: #f5f6fa; font-family: Arial, sans-serif; text-align: center; margin: 0; padding: 20px; }
+    h2 { margin-bottom: 5px; }
+    #status { font-size: 14px; color: #f1c40f; margin-bottom: 15px; }
+    #rawText { font-size: 13px; color: #d2dae2; margin-bottom: 15px; font-family: monospace; }
+    canvas { background-color: #2f3640; border-radius: 8px; border: 2px solid #718093; max-width: 95%; }
+  </style>
+</head>
+<body>
+  <h2>ESP32 云端雷达实时波形</h2>
+  <div id="status">正在连接云端服务器...</div>
+  <div id="rawText">等待数据接收...</div>
+  <canvas id="waveCanvas" width="400" height="250"></canvas>
+
+  <script>
+    const canvas = document.getElementById('waveCanvas');
+    const ctx = canvas.getContext('2d');
+    const statusDiv = document.getElementById('status');
+    const rawTextDiv = document.getElementById('rawText');
+
+    let dataPoints = [];
+    const maxPoints = 50;
+
+    // 连接 EMQX 公共 WebSocket 端口 (8083 为 ws 端口，8084 为 wss 端口)
+    const client = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+    const topic = 'hw_radar_test/vital_signs/iq_stream';
+
+    client.on('connect', function () {
+      statusDiv.innerText = "已连接云端，正在监听主题: " + topic;
+      statusDiv.style.color = "#2ecc71";
+      client.subscribe(topic);
+    });
+
+    client.on('error', function (err) {
+      statusDiv.innerText = "连接失败: " + err;
+      statusDiv.style.color = "#e74c3c";
+    });
+
+    client.on('message', function (topic, message) {
+      const text = message.toString();
+      rawTextDiv.innerText = "云端数据: " + text;
+
+      const values = text.split(',');
+      if (values.length >= 1) {
+        const i245 = parseFloat(values[0]);
+        dataPoints.push(i245);
+        if (dataPoints.length > maxPoints) {
+          dataPoints.shift();
+        }
+        drawWave();
+      }
+    });
+
+    function drawWave() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (dataPoints.length === 0) return;
+
+      const minVal = Math.min(...dataPoints) - 1;
+      const maxVal = Math.max(...dataPoints) + 1;
+      const range = maxVal - minVal;
+
+      ctx.beginPath();
+      ctx.strokeStyle = '#2ecc71';
+      ctx.lineWidth = 3;
+
+      for (let i = 0; i < dataPoints.length; i++) {
+        const x = (i / (maxPoints - 1)) * canvas.width;
+        const normalizedY = (dataPoints[i] - minVal) / range;
+        const y = canvas.height - (normalizedY * canvas.height);
+
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  </script>
+</body>
+</html>
