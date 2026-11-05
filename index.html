@@ -3,83 +3,244 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ESP32 云端雷达实时波形</title>
-  <!-- 引入公共 MQTT WebSocket 库 -->
+  <title>雷达时频联合监测看板</title>
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
-    body { background-color: #1e272e; color: #f5f6fa; font-family: Arial, sans-serif; text-align: center; margin: 0; padding: 20px; }
-    h2 { margin-bottom: 5px; }
-    #status { font-size: 14px; color: #f1c40f; margin-bottom: 15px; }
-    #rawText { font-size: 13px; color: #d2dae2; margin-bottom: 15px; font-family: monospace; }
-    canvas { background-color: #2f3640; border-radius: 8px; border: 2px solid #718093; max-width: 95%; }
+    body { background-color: #f1f2f6; color: #2f3542; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; }
+    h3 { margin: 0 0 8px 0; text-align: center; font-size: 16px; }
+    #status { font-size: 12px; color: #e67e22; text-align: center; margin-bottom: 10px; font-weight: bold; }
+    
+    /* 仿 MATLAB 图表网格布局：手机端竖屏排布，平板/宽屏并排排布 */
+    .dashboard { display: flex; flex-direction: column; gap: 12px; max-width: 900px; margin: 0 auto; }
+    @media (min-width: 768px) {
+      .dashboard { display: grid; grid-template-columns: 1fr 1.2fr; grid-template-rows: auto auto; }
+      .box-i { grid-column: 1; grid-row: 1; }
+      .box-q { grid-column: 1; grid-row: 2; }
+      .box-fft { grid-column: 2; grid-row: 1 / span 2; }
+    }
+    
+    .chart-card { background: #ffffff; border: 1px solid #ced6e0; border-radius: 8px; padding: 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
+    .chart-title { font-size: 13px; font-weight: bold; text-align: center; margin-bottom: 4px; color: #3742fa; }
+    canvas { width: 100%; height: 180px; display: block; background: #ffffff; }
+    .box-fft canvas { height: 380px; }
   </style>
 </head>
 <body>
-  <h2>ESP32 云端雷达实时波形</h2>
-  <div id="status">正在连接云端服务器...</div>
-  <div id="rawText">等待数据接收...</div>
-  <canvas id="waveCanvas" width="400" height="250"></canvas>
+  <h3>5.8 GHz 雷达生命体征时频监测</h3>
+  <div id="status">正在接入云端数据流...</div>
+
+  <div class="dashboard">
+    <!-- 左上: I 5.8 GHz -->
+    <div class="chart-card box-i">
+      <div class="chart-title">I 5.8 GHz (Time Domain)</div>
+      <canvas id="canvasI"></canvas>
+    </div>
+
+    <!-- 左下: Q 5.8 GHz -->
+    <div class="chart-card box-q">
+      <div class="chart-title">Q 5.8 GHz (Time Domain)</div>
+      <canvas id="canvasQ"></canvas>
+    </div>
+
+    <!-- 右侧: I+jQ FFT 5.8 GHz -->
+    <div class="chart-card box-fft">
+      <div class="chart-title">I+jQ FFT 5.8 (Frequency Domain)</div>
+      <canvas id="canvasFFT"></canvas>
+    </div>
+  </div>
 
   <script>
-    const canvas = document.getElementById('waveCanvas');
-    const ctx = canvas.getContext('2d');
+    const cvsI = document.getElementById('canvasI');
+    const cvsQ = document.getElementById('canvasQ');
+    const cvsFFT = document.getElementById('canvasFFT');
+    const ctxI = cvsI.getContext('2d');
+    const ctxQ = cvsQ.getContext('2d');
+    const ctxFFT = cvsFFT.getContext('2d');
     const statusDiv = document.getElementById('status');
-    const rawTextDiv = document.getElementById('rawText');
 
-    let dataPoints = [];
-    const maxPoints = 50;
+    // 适配高清屏幕像素比
+    function resizeCanvas(cvs) {
+      cvs.width = cvs.clientWidth * window.devicePixelRatio;
+      cvs.height = cvs.clientHeight * window.devicePixelRatio;
+    }
+    window.addEventListener('resize', () => { resizeCanvas(cvsI); resizeCanvas(cvsQ); resizeCanvas(cvsFFT); });
+    resizeCanvas(cvsI); resizeCanvas(cvsQ); resizeCanvas(cvsFFT);
 
-    // 连接 EMQX 公共 WebSocket 端口 (8083 为 ws 端口，8084 为 wss 端口)
+    // 缓存时域数据（对齐 MATLAB 采样点数）
+    const Fs = 20; // 采样率 20Hz
+    const windowSec = 15; // 滑动窗口时长
+    const N = Fs * windowSec; // 窗口总采样点
+    let bufferI = [];
+    let bufferQ = [];
+
+    // MQTT 连接
     const client = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
     const topic = 'hw_radar_test/vital_signs/iq_stream';
 
-    client.on('connect', function () {
-      statusDiv.innerText = "已连接云端，正在监听主题: " + topic;
-      statusDiv.style.color = "#2ecc71";
+    client.on('connect', () => {
+      statusDiv.innerText = "● 已实时连通云端 (MQTT/WebSocket)";
+      statusDiv.style.color = "#2ed573";
       client.subscribe(topic);
     });
 
-    client.on('error', function (err) {
-      statusDiv.innerText = "连接失败: " + err;
-      statusDiv.style.color = "#e74c3c";
-    });
+    client.on('message', (t, msg) => {
+      const parts = msg.toString().split(',');
+      if (parts.length >= 4) {
+        // 索引 2 为 I 5.8GHz, 索引 3 为 Q 5.8GHz
+        const valI = parseFloat(parts[2]);
+        const valQ = parseFloat(parts[3]);
 
-    client.on('message', function (topic, message) {
-      const text = message.toString();
-      rawTextDiv.innerText = "云端数据: " + text;
-
-      const values = text.split(',');
-      if (values.length >= 1) {
-        const i245 = parseFloat(values[0]);
-        dataPoints.push(i245);
-        if (dataPoints.length > maxPoints) {
-          dataPoints.shift();
+        bufferI.push(valI);
+        bufferQ.push(valQ);
+        if (bufferI.length > N) {
+          bufferI.shift();
+          bufferQ.shift();
         }
-        drawWave();
+
+        renderDashboard();
       }
     });
 
-    function drawWave() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (dataPoints.length === 0) return;
+    // 绘图与信号处理管线
+    function renderDashboard() {
+      if (bufferI.length < 10) return;
 
-      const minVal = Math.min(...dataPoints) - 1;
-      const maxVal = Math.max(...dataPoints) + 1;
-      const range = maxVal - minVal;
+      // 1. 去直流分量 (DC removal)
+      const meanI = bufferI.reduce((a, b) => a + b, 0) / bufferI.length;
+      const meanQ = bufferQ.reduce((a, b) => a + b, 0) / bufferQ.length;
+      const cleanI = bufferI.map(v => v - meanI);
+      const cleanQ = bufferQ.map(v => v - meanQ);
 
+      // 2. 绘制时域图 I 与 Q
+      drawTimeSeries(ctxI, cvsI, cleanI, "#1e90ff", "mV");
+      drawTimeSeries(ctxQ, cvsQ, cleanQ, "#2ed573", "mV");
+
+      // 3. 计算 FFT 频谱 (点数满足 2 的幂次)
+      const fftLen = 256;
+      let real = new Float32Array(fftLen);
+      let imag = new Float32Array(fftLen);
+
+      // 加汉明窗 (Hamming Window) 并填充数据
+      const len = Math.min(cleanI.length, fftLen);
+      for (let i = 0; i < len; i++) {
+        const w = 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (len - 1));
+        real[i] = cleanI[i] * w;
+        imag[i] = cleanQ[i] * w;
+      }
+
+      // 执行原位复数 FFT
+      transformFFT(real, imag);
+
+      // 计算 dBm 幅值与频率轴映射
+      let bpmList = [];
+      let magdB = [];
+      const df = Fs / fftLen;
+      for (let i = 0; i < fftLen / 2; i++) {
+        const freqBPM = i * df * 60; // 转换成 BPM (次/分钟)
+        if (freqBPM > 120) break;   // 对齐 MATLAB: 范围限制在 0~120 BPM
+        bpmList.push(freqBPM);
+
+        const mag = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]) / len;
+        const db = 20 * Math.log10(mag + 1e-6);
+        magdB.push(db);
+      }
+
+      // 4. 绘制频谱图
+      drawSpectrum(ctxFFT, cvsFFT, bpmList, magdB);
+    }
+
+    // 绘制时域折线
+    function drawTimeSeries(ctx, cvs, data, color, unit) {
+      ctx.clearRect(0, 0, cvs.width, cvs.height);
+      const pad = 35;
+      const w = cvs.width - pad * 2;
+      const h = cvs.height - pad * 2;
+
+      const min = Math.min(...data);
+      const max = Math.max(...data);
+      const range = (max - min) || 1;
+
+      // 绘制网格与轴
+      ctx.strokeStyle = "#e4e7eb";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(pad, pad, w, h);
+
+      // 绘制波形
       ctx.beginPath();
-      ctx.strokeStyle = '#2ecc71';
-      ctx.lineWidth = 3;
-
-      for (let i = 0; i < dataPoints.length; i++) {
-        const x = (i / (maxPoints - 1)) * canvas.width;
-        const normalizedY = (dataPoints[i] - minVal) / range;
-        const y = canvas.height - (normalizedY * canvas.height);
-
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2 * window.devicePixelRatio;
+      for (let i = 0; i < data.length; i++) {
+        const x = pad + (i / (N - 1)) * w;
+        const y = pad + h - ((data[i] - min) / range) * h;
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
       ctx.stroke();
+    }
+
+    // 绘制频域谱线
+    function drawSpectrum(ctx, cvs, xBPM, ydB) {
+      ctx.clearRect(0, 0, cvs.width, cvs.height);
+      const pad = 40;
+      const w = cvs.width - pad * 2;
+      const h = cvs.height - pad * 2;
+
+      // 坐标轴固定范围：对齐 MATLAB [-70dBm, 10dBm], [0, 120 BPM]
+      const minDB = -70;
+      const maxDB = 10;
+      const maxBPM = 120;
+
+      // 边框网格
+      ctx.strokeStyle = "#e4e7eb";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(pad, pad, w, h);
+
+      ctx.beginPath();
+      ctx.strokeStyle = "#3742fa";
+      ctx.lineWidth = 2 * window.devicePixelRatio;
+
+      for (let i = 0; i < xBPM.length; i++) {
+        const x = pad + (xBPM[i] / maxBPM) * w;
+        const normY = (ydB[i] - minDB) / (maxDB - minDB);
+        const y = pad + h - Math.max(0, Math.min(1, normY)) * h;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    // 基础 Cooley-Tukey 快速傅里叶变换 (FFT) 算法
+    function transformFFT(real, imag) {
+      const n = real.length;
+      let j = 0;
+      for (let i = 0; i < n - 1; i++) {
+        if (i < j) {
+          let tr = real[i]; real[i] = real[j]; real[j] = tr;
+          let ti = imag[i]; imag[i] = imag[j]; imag[j] = ti;
+        }
+        let k = n >> 1;
+        while (k <= j) { j -= k; k >>= 1; }
+        j += k;
+      }
+      for (let l = 2; l <= n; l <<= 1) {
+        let ang = -2 * Math.PI / l;
+        let wstep_r = Math.cos(ang), wstep_i = Math.sin(ang);
+        for (let i = 0; i < n; i += l) {
+          let wr = 1, wi = 0;
+          for (let m = 0; m < l / 2; m++) {
+            let u_r = real[i + m], u_i = imag[i + m];
+            let v_r = real[i + m + l / 2] * wr - imag[i + m + l / 2] * wi;
+            let v_i = real[i + m + l / 2] * wi + imag[i + m + l / 2] * wr;
+            real[i + m] = u_r + v_r;
+            imag[i + m] = u_i + v_i;
+            real[i + m + l / 2] = u_r - v_r;
+            imag[i + m + l / 2] = u_i - v_i;
+            let twr = wr * wstep_r - wi * wstep_i;
+            wi = wr * wstep_i + wi * wstep_r;
+            wr = twr;
+          }
+        }
+      }
     }
   </script>
 </body>
