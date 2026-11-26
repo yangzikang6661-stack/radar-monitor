@@ -3,26 +3,121 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>雷达时频联合监测看板</title>
+  <title>雷达时频与生命体征联合监测看板</title>
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
-    body { background-color: #f1f2f6; color: #2f3542; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; }
-    h3 { margin: 0 0 8px 0; text-align: center; font-size: 16px; }
-    #status { font-size: 12px; color: #e67e22; text-align: center; margin-bottom: 10px; font-weight: bold; }
-    
-    /* 仿 MATLAB 图表网格布局：手机端竖屏排布，平板/宽屏并排排布 */
-    .dashboard { display: flex; flex-direction: column; gap: 12px; max-width: 900px; margin: 0 auto; }
+    body {
+      background-color: #f1f2f6;
+      color: #2f3542;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 12px;
+    }
+    h3 {
+      margin: 0 0 8px 0;
+      text-align: center;
+      font-size: 16px;
+    }
+    #status {
+      font-size: 12px;
+      color: #e67e22;
+      text-align: center;
+      margin-bottom: 12px;
+      font-weight: bold;
+    }
+
+    /* 原有时频网格布局：手机端竖屏排布，平板/宽屏并排排布 */
+    .dashboard {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-width: 960px;
+      margin: 0 auto;
+    }
     @media (min-width: 768px) {
-      .dashboard { display: grid; grid-template-columns: 1fr 1.2fr; grid-template-rows: auto auto; }
+      .dashboard {
+        display: grid;
+        grid-template-columns: 1fr 1.2fr;
+        grid-template-rows: auto auto;
+      }
       .box-i { grid-column: 1; grid-row: 1; }
       .box-q { grid-column: 1; grid-row: 2; }
       .box-fft { grid-column: 2; grid-row: 1 / span 2; }
     }
-    
-    .chart-card { background: #ffffff; border: 1px solid #ced6e0; border-radius: 8px; padding: 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
-    .chart-title { font-size: 13px; font-weight: bold; text-align: center; margin-bottom: 4px; color: #3742fa; }
-    canvas { width: 100%; height: 180px; display: block; background: #ffffff; }
-    .box-fft canvas { height: 380px; }
+
+    /* 生命体征（呼吸率 & 心率随时间变化）区域 */
+    .vitals-section {
+      max-width: 960px;
+      margin: 14px auto 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .vitals-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .vital-metric-card {
+      background: #ffffff;
+      border: 1px solid #ced6e0;
+      border-radius: 8px;
+      padding: 12px 14px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+    }
+    .vital-label {
+      font-size: 12px;
+      color: #57606a;
+      font-weight: 600;
+    }
+    .vital-value-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .vital-num {
+      font-size: 28px;
+      font-weight: 700;
+    }
+    .br-color { color: #0969da; }
+    .hr-color { color: #cf222e; }
+    .vital-unit {
+      font-size: 12px;
+      color: #57606a;
+    }
+    .vital-peak {
+      margin-left: auto;
+      font-size: 12px;
+      color: #6e7781;
+    }
+
+    .chart-card {
+      background: #ffffff;
+      border: 1px solid #ced6e0;
+      border-radius: 8px;
+      padding: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+    }
+    .chart-title {
+      font-size: 13px;
+      font-weight: bold;
+      text-align: center;
+      margin-bottom: 4px;
+      color: #3742fa;
+    }
+    canvas {
+      width: 100%;
+      height: 180px;
+      display: block;
+      background: #ffffff;
+    }
+    .box-fft canvas {
+      height: 380px;
+    }
+    .vitals-section canvas {
+      height: 165px;
+    }
   </style>
 </head>
 <body>
@@ -49,13 +144,51 @@
     </div>
   </div>
 
+  <!-- 生命体征随时间变化区域 -->
+  <div class="vitals-section">
+    <div class="vitals-cards">
+      <div class="vital-metric-card">
+        <div class="vital-label">Breathing Rate (0.1 – 0.5 Hz)</div>
+        <div class="vital-value-row">
+          <span id="brValue" class="vital-num br-color">--</span>
+          <span class="vital-unit">Breaths/min</span>
+          <span id="brFreq" class="vital-peak">-- Hz</span>
+        </div>
+      </div>
+
+      <div class="vital-metric-card">
+        <div class="vital-label">Heart Rate (0.8 – 2.5 Hz)</div>
+        <div class="vital-value-row">
+          <span id="hrValue" class="vital-num hr-color">--</span>
+          <span class="vital-unit">BPM</span>
+          <span id="hrFreq" class="vital-peak">-- Hz</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-title" style="color: #0969da;">Breathing Rate vs. Time (Breaths/min)</div>
+      <canvas id="canvasBRTime"></canvas>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-title" style="color: #cf222e;">Heart Rate vs. Time (BPM)</div>
+      <canvas id="canvasHRTime"></canvas>
+    </div>
+  </div>
+
   <script>
     const cvsI = document.getElementById('canvasI');
     const cvsQ = document.getElementById('canvasQ');
     const cvsFFT = document.getElementById('canvasFFT');
+    const cvsBRTime = document.getElementById('canvasBRTime');
+    const cvsHRTime = document.getElementById('canvasHRTime');
+
     const ctxI = cvsI.getContext('2d');
     const ctxQ = cvsQ.getContext('2d');
     const ctxFFT = cvsFFT.getContext('2d');
+    const ctxBRTime = cvsBRTime.getContext('2d');
+    const ctxHRTime = cvsHRTime.getContext('2d');
     const statusDiv = document.getElementById('status');
 
     // 适配高清屏幕像素比
@@ -63,15 +196,32 @@
       cvs.width = cvs.clientWidth * window.devicePixelRatio;
       cvs.height = cvs.clientHeight * window.devicePixelRatio;
     }
-    window.addEventListener('resize', () => { resizeCanvas(cvsI); resizeCanvas(cvsQ); resizeCanvas(cvsFFT); });
-    resizeCanvas(cvsI); resizeCanvas(cvsQ); resizeCanvas(cvsFFT);
+    function resizeAllCanvases() {
+      [cvsI, cvsQ, cvsFFT, cvsBRTime, cvsHRTime].forEach(resizeCanvas);
+    }
+    window.addEventListener('resize', resizeAllCanvases);
+    resizeAllCanvases();
 
-    // 缓存时域数据（对齐 MATLAB 采样点数）
+    // 缓存时域数据（对齐采样点数）
     const Fs = 20; // 采样率 20Hz
     const windowSec = 15; // 滑动窗口时长
     const N = Fs * windowSec; // 窗口总采样点
     let bufferI = [];
     let bufferQ = [];
+
+    // 生命体征时间序列缓存
+    const brMinHz = 0.1;
+    const brMaxHz = 0.5;
+    const hrMinHz = 0.8;
+    const hrMaxHz = 2.5;
+    const smoothWindow = 5;
+    const maxHistoryPoints = 80;
+
+    const brSmoothBuf = [];
+    const hrSmoothBuf = [];
+    const brHistory = []; // { t: 秒, val: Breaths/min }
+    const hrHistory = []; // { t: 秒, val: BPM }
+    const startTimeMs = Date.now();
 
     // MQTT 连接
     const client = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
@@ -90,16 +240,42 @@
         const valI = parseFloat(parts[2]);
         const valQ = parseFloat(parts[3]);
 
-        bufferI.push(valI);
-        bufferQ.push(valQ);
-        if (bufferI.length > N) {
-          bufferI.shift();
-          bufferQ.shift();
-        }
+        if (Number.isFinite(valI) && Number.isFinite(valQ)) {
+          bufferI.push(valI);
+          bufferQ.push(valQ);
+          if (bufferI.length > N) {
+            bufferI.shift();
+            bufferQ.shift();
+          }
 
-        renderDashboard();
+          renderDashboard();
+        }
       }
     });
+
+    // 在指定频段 [minHz, maxHz] 内寻找幅值最大点对应的频率 (Hz)
+    function findPeakFreqInBand(magArray, df, minHz, maxHz) {
+      const startBin = Math.max(1, Math.ceil(minHz / df));
+      const endBin = Math.min(magArray.length - 1, Math.floor(maxHz / df));
+      if (startBin > endBin) return null;
+
+      let bestVal = -Infinity;
+      let bestBin = -1;
+      for (let i = startBin; i <= endBin; i++) {
+        const v = magArray[i];
+        if (Number.isFinite(v) && v > bestVal) {
+          bestVal = v;
+          bestBin = i;
+        }
+      }
+      return bestBin === -1 ? null : bestBin * df;
+    }
+
+    function smoothValue(buf, val, winSize) {
+      buf.push(val);
+      if (buf.length > winSize) buf.shift();
+      return buf.reduce((a, b) => a + b, 0) / buf.length;
+    }
 
     // 绘图与信号处理管线
     function renderDashboard() {
@@ -131,22 +307,55 @@
       // 执行原位复数 FFT
       transformFFT(real, imag);
 
-      // 计算 dBm 幅值与频率轴映射
+      // 计算完整单边幅度谱（用于提取 0.1~0.5 Hz 呼吸率与 0.8~2.5 Hz 心率）
+      const halfLen = fftLen / 2;
+      const magFull = new Float32Array(halfLen);
+      for (let i = 0; i < halfLen; i++) {
+        magFull[i] = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]) / len;
+      }
+
+      const df = Fs / fftLen;
+      const elapsedSec = (Date.now() - startTimeMs) / 1000;
+
+      // 提取呼吸率 (0.1 - 0.5 Hz -> Breaths/min)
+      const brPeakHz = findPeakFreqInBand(magFull, df, brMinHz, brMaxHz);
+      const brValueEl = document.getElementById('brValue');
+      const brFreqEl = document.getElementById('brFreq');
+      if (brPeakHz !== null) {
+        const brVal = smoothValue(brSmoothBuf, brPeakHz * 60, smoothWindow);
+        brHistory.push({ t: elapsedSec, val: brVal });
+        if (brHistory.length > maxHistoryPoints) brHistory.shift();
+        if (brValueEl) brValueEl.innerText = brVal.toFixed(1);
+        if (brFreqEl) brFreqEl.innerText = `${brPeakHz.toFixed(3)} Hz`;
+      }
+
+      // 提取心率 (0.8 - 2.5 Hz -> BPM)
+      const hrPeakHz = findPeakFreqInBand(magFull, df, hrMinHz, hrMaxHz);
+      const hrValueEl = document.getElementById('hrValue');
+      const hrFreqEl = document.getElementById('hrFreq');
+      if (hrPeakHz !== null) {
+        const hrVal = smoothValue(hrSmoothBuf, hrPeakHz * 60, smoothWindow);
+        hrHistory.push({ t: elapsedSec, val: hrVal });
+        if (hrHistory.length > maxHistoryPoints) hrHistory.shift();
+        if (hrValueEl) hrValueEl.innerText = hrVal.toFixed(0);
+        if (hrFreqEl) hrFreqEl.innerText = `${hrPeakHz.toFixed(3)} Hz`;
+      }
+
+      // 计算 dBm 幅值与频率轴映射（限制在 0~120 BPM 显示）
       let bpmList = [];
       let magdB = [];
-      const df = Fs / fftLen;
-      for (let i = 0; i < fftLen / 2; i++) {
-        const freqBPM = i * df * 60; // 转换成 BPM (次/分钟)
-        if (freqBPM > 120) break;   // 对齐 MATLAB: 范围限制在 0~120 BPM
+      for (let i = 0; i < halfLen; i++) {
+        const freqBPM = i * df * 60;
+        if (freqBPM > 120) break;
         bpmList.push(freqBPM);
-
-        const mag = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]) / len;
-        const db = 20 * Math.log10(mag + 1e-6);
+        const db = 20 * Math.log10(magFull[i] + 1e-6);
         magdB.push(db);
       }
 
-      // 4. 绘制频谱图
+      // 4. 绘制频谱图与随时间变化的呼吸率/心率曲线
       drawSpectrum(ctxFFT, cvsFFT, bpmList, magdB);
+      drawVitalOverTime(ctxBRTime, cvsBRTime, brHistory, "#0969da", 5, 30, "Breaths/min");
+      drawVitalOverTime(ctxHRTime, cvsHRTime, hrHistory, "#cf222e", 45, 150, "BPM");
     }
 
     // 绘制时域折线
@@ -160,12 +369,10 @@
       const max = Math.max(...data);
       const range = (max - min) || 1;
 
-      // 绘制网格与轴
       ctx.strokeStyle = "#e4e7eb";
       ctx.lineWidth = 1;
       ctx.strokeRect(pad, pad, w, h);
 
-      // 绘制波形
       ctx.beginPath();
       ctx.strokeStyle = color;
       ctx.lineWidth = 2 * window.devicePixelRatio;
@@ -185,12 +392,10 @@
       const w = cvs.width - pad * 2;
       const h = cvs.height - pad * 2;
 
-      // 坐标轴固定范围：对齐 MATLAB [-70dBm, 10dBm], [0, 120 BPM]
       const minDB = -70;
       const maxDB = 10;
       const maxBPM = 120;
 
-      // 边框网格
       ctx.strokeStyle = "#e4e7eb";
       ctx.lineWidth = 1;
       ctx.strokeRect(pad, pad, w, h);
@@ -206,6 +411,70 @@
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
+      ctx.stroke();
+    }
+
+    // 绘制生命体征随时间变化曲线 (Vital Sign vs. Time)
+    function drawVitalOverTime(ctx, cvs, historyArr, color, yMin, yMax, unitText) {
+      ctx.clearRect(0, 0, cvs.width, cvs.height);
+      const dpr = window.devicePixelRatio || 1;
+      const padLeft = 42 * dpr;
+      const padRight = 16 * dpr;
+      const padTop = 12 * dpr;
+      const padBottom = 22 * dpr;
+      const w = cvs.width - padLeft - padRight;
+      const h = cvs.height - padTop - padBottom;
+
+      ctx.strokeStyle = "#e4e7eb";
+      ctx.lineWidth = 1 * dpr;
+      ctx.strokeRect(padLeft, padTop, w, h);
+
+      ctx.fillStyle = "#6e7781";
+      ctx.font = `${10 * dpr}px -apple-system, sans-serif`;
+
+      // 纵坐标上下限与中间刻度
+      const ticks = [yMin, (yMin + yMax) / 2, yMax];
+      ticks.forEach(tv => {
+        const ratio = (tv - yMin) / (yMax - yMin);
+        const y = padTop + h - ratio * h;
+        ctx.beginPath();
+        ctx.moveTo(padLeft, y);
+        ctx.lineTo(padLeft + w, y);
+        ctx.stroke();
+        ctx.fillText(tv.toFixed(0), 4 * dpr, y + 3 * dpr);
+      });
+
+      if (historyArr.length === 0) {
+        ctx.fillStyle = "#8c959f";
+        ctx.fillText(`Waiting for ${unitText} time-series data...`, padLeft + 10 * dpr, padTop + h / 2);
+        return;
+      }
+
+      const tStart = historyArr[0].t;
+      const tEnd = historyArr[historyArr.length - 1].t;
+      const tSpan = Math.max(1, tEnd - tStart);
+
+      // 横坐标时间标签
+      ctx.fillStyle = "#6e7781";
+      ctx.fillText(`${tStart.toFixed(0)}s`, padLeft, cvs.height - 6 * dpr);
+      ctx.fillText(`${tEnd.toFixed(0)}s (Time)`, padLeft + w - 58 * dpr, cvs.height - 6 * dpr);
+
+      // 绘制随时间变化的折线
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2 * dpr;
+
+      historyArr.forEach((pt, idx) => {
+        const xRatio = historyArr.length === 1 ? 0.5 : (pt.t - tStart) / tSpan;
+        const clamped = Math.max(yMin, Math.min(yMax, pt.val));
+        const yRatio = (clamped - yMin) / (yMax - yMin);
+
+        const x = padLeft + xRatio * w;
+        const y = padTop + h - yRatio * h;
+
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
       ctx.stroke();
     }
 
